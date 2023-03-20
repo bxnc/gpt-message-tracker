@@ -1,0 +1,149 @@
+#!/bin/bash
+
+COOLOFF_PERIOD_IN_HOURS=3
+COOLOFF_PERIOD_IN_SECONDS=$(($COOLOFF_PERIOD_IN_HOURS * 3600))
+LIMIT=25
+TIMESTAMPS=/tmp/message_timestamps
+COOLOFF_TIMESTAMPS=/tmp/message_cooloff_timestamps
+
+record_message() {
+
+	# Only record a message if we are under the limit
+	if [[ ! -e $TIMESTAMPS || $(wc -l $TIMESTAMPS | awk '{print $1}') -lt $LIMIT ]]; then
+		date +%s >> $TIMESTAMPS
+	else
+		echo -e "No messages remaining, use \`gpt when [\033[4mnumber\033[0m]\` to see when they will become available"
+		exit
+	fi
+
+	N_MESSAGES_REMAINING=$(($LIMIT - $(wc -l $TIMESTAMPS | awk '{print $1}')))
+	echo "$N_MESSAGES_REMAINING/$LIMIT messages remaining"
+
+}
+ 
+print_when_messages_become_available() {
+
+	# Optional parameter
+	N_MESSAGES_TO_DISPLAY=$1
+
+	# Exit if there are no recorded message times
+	if [[ ! -e $TIMESTAMPS || ! -s $TIMESTAMPS ]]; then
+		echo "All $LIMIT messages are currently available"
+		exit
+	fi
+
+	# Calculate when the messages will become available
+	rm -f $COOLOFF_TIMESTAMPS
+	while read -r TIMESTAMP; do
+		CURRENT_TIME=$(date +%s)
+		AVAILABLE_AT=$(($TIMESTAMP + $COOLOFF_PERIOD_IN_SECONDS))
+		date -d "@$AVAILABLE_AT" +%r >> $COOLOFF_TIMESTAMPS
+	done < $TIMESTAMPS
+
+	if [[ $N_MESSAGES_TO_DISPLAY = "" || $N_MESSAGES_TO_DISPLAY -gt $LIMIT ]]; then
+		N_MESSAGES_TO_DISPLAY=$LIMIT
+	fi
+
+	# Print when the messages will become available
+	# The last 3 lines add line numbers with minimal leading white space
+	# https://stackoverflow.com/a/66486292
+	AVAILABILITY=$(head -n $N_MESSAGES_TO_DISPLAY $COOLOFF_TIMESTAMPS | nl -s '. ')
+	INDENT=$(("$(tail -n1 <<< "$AVAILABILITY" | sed -E 's/^( *).*/\1/g' | wc -m)" - 1))
+	colrm 1 $INDENT <<< "$AVAILABILITY"
+
+}
+
+# When the script runs, delete all the message timestamps that are older than the cool-off period
+if [[ -e $TIMESTAMPS ]]; then
+	while read -r TIMESTAMP; do
+		CURRENT_TIME=$(date +%s)
+		AVAILABLE_AT=$(($TIMESTAMP + $COOLOFF_PERIOD_IN_SECONDS))
+		if [[ $CURRENT_TIME -gt $AVAILABLE_AT ]]; then
+			sed -i "/$TIMESTAMP/d" $TIMESTAMPS
+		fi
+	done < $TIMESTAMPS
+fi
+
+# Display the number of remaining messages
+if [[ $1 = "?" ]]; then
+	if [[ -e $TIMESTAMPS ]]; then
+		N_MESSAGES_REMAINING=$(($LIMIT - $(wc -l $TIMESTAMPS | awk '{print $1}')))
+	else
+		N_MESSAGES_REMAINING=$LIMIT
+	fi
+	echo "$N_MESSAGES_REMAINING/$LIMIT messages remaining"
+	exit
+fi
+
+# Remove the most recent message, in case you record one by accident
+if [[ ${1,,} = undo ]]; then
+	N_MESSAGES=$(wc -l $TIMESTAMPS | awk '{print $1}') 
+	N_MESSAGES_REMAINING=$(($LIMIT - $(wc -l $TIMESTAMPS | awk '{print $1}')))
+	if [[ ! -e $TIMESTAMPS || $N_MESSAGES_REMAINING = $LIMIT ]]; then
+		echo "No message to undo, $N_MESSAGES_REMAINING/$LIMIT remaining"
+		exit 1
+	fi
+	sed -i '$ d' $TIMESTAMPS
+	N_MESSAGES_REMAINING=$(($LIMIT - $(wc -l $TIMESTAMPS | awk '{print $1}')))
+	echo "$N_MESSAGES_REMAINING/$LIMIT messages remaining"
+	exit
+fi
+
+# Display when additional messages will become available
+if [[ ${1,,} = when ]]; then
+	# Optional parameter of how many to show
+	if [[ $# -gt 1 ]]; then
+		if ! [[ $2 =~ ^-?[0-9]+$ ]] || [[ $2 -lt 1 ]]; then
+			echo "Error: $2 is not a positive integer"
+			exit 1
+		fi
+		print_when_messages_become_available $2
+		exit
+	fi
+	print_when_messages_become_available
+	exit
+fi
+
+# Display or set the cool-off period
+if [[ ${1,,} =~ ^(hour|hours) ]]; then
+	if [[ $2 = "" ]]; then
+		echo "Hours is set to $COOLOFF_PERIOD_IN_HOURS"
+		exit
+	fi
+	if ! [[ $2 =~ ^-?[0-9]+$ ]] || [[ $2 -lt 1 ]]; then
+		echo "Error: $2 is not a positive integer"
+		exit 1
+	fi
+	sed -i "s/^COOLOFF_PERIOD_IN_HOURS=.*/COOLOFF_PERIOD_IN_HOURS=$2/" $0
+	echo "Hours set to $2"
+	exit
+fi
+
+# Display or set the message limit
+if [[ ${1,,} = limit ]]; then
+	if [[ $2 = "" ]]; then
+		echo "Limit is set to $LIMIT"
+		exit
+	fi
+	if ! [[ $2 =~ ^-?[0-9]+$ ]] || [[ $2 -lt 1 ]]; then
+		echo "Error: $2 is not a positive integer"
+		exit 1
+	fi
+	sed -i "s/^LIMIT=.*/LIMIT=$2/" $0
+	echo "Limit set to $2"
+	exit
+fi
+
+if [[ $1 != "" || $# -gt 2 || $1 =~ ^(h|-h|--help|help) ]]; then
+	SCRIPT_NAME=${0##*/}
+	echo "usage: $SCRIPT_NAME                - Record that you used a message"
+	echo "       $SCRIPT_NAME ?              - Display the number of remaining messages"
+	echo -e "       $SCRIPT_NAME when [\033[4mnumber\033[0m]  - Display when [number of] messages will become available"
+	echo "       $SCRIPT_NAME undo           - Remove the most recent message, in case you record one by accident"
+	echo -e "       $SCRIPT_NAME hours [\033[4mnumber\033[0m] - Display or set the cool-off period"
+	echo -e "       $SCRIPT_NAME limit [\033[4mnumber\033[0m] - Display or set the message limit"
+	exit
+fi
+
+record_message
+exit
